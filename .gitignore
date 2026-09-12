@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+.venv/
+venv/
+.env
+.env.*
+playground/config.js
+.playwright/
+*.log
+.DS_Store
+Thumbs.db

@@ -1,0 +1,45 @@
+{
+  "name": "gc-sdk",
+  "version": "0.1.0",
+  "description": "Playwright SDK для автоматизации админки GetCourse",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IgorAndrosov/getcourse-sdk.git"
+  },
+  "homepage": "https://github.com/IgorAndrosov/getcourse-sdk",
+  "bugs": {
+    "url": "https://github.com/IgorAndrosov/getcourse-sdk/issues"
+  },
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "keywords": [
+    "getcourse",
+    "playwright",
+    "sdk"
+  ],
+  "scripts": {
+    "login": "node playground/login.js",
+    "groups": "node playground/groups.js",
+    "user": "node playground/user.js",
+    "add-to-group": "node playground/add-to-group.js",
+    "remove-from-group": "node playground/remove-from-group.js",
+    "set-field": "node playground/set-field.js",
+    "set-deal-field": "node playground/set-deal-field.js",
+    "create-user": "node playground/create-user.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "playwright": "^1.40.0"
+  }
+}

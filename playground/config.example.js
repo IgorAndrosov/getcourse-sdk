@@ -1,0 +1,23 @@
+/** Скопируйте в config.js и заполните данные школы. */
+export default {
+  login: "user@example.com",
+  password: "secret",
+  baseUrl: "https://your-school.getcourse.ru",
+  headless: false,
+  keepOpen: true,
+  searchEmail: "",
+  searchPhone: "",
+  userId: "",
+  groupName: "",
+  fieldName: "",
+  fieldValue: "",
+  dealId: "",
+  dealFieldName: "",
+  dealFieldValue: "",
+  createEmail: "",
+  createType: "ученик",
+  createFirstName: "",
+  createLastName: "",
+  sendInvitationEmail: undefined,
+  createGroupName: "",
+};
