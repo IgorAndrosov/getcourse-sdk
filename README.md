@@ -1,4 +1,4 @@
-# gc-sdk
+# getcourse-sdk
 
 Playwright-библиотека для автоматизации админки GetCourse. Сессия живёт, пока открыт клиент: методы ходят уже авторизованными.
 
@@ -11,10 +11,8 @@ npm install github:IgorAndrosov/getcourse-sdk
 npx playwright install chromium
 ```
 
-Импорт в коде — `gc-sdk` (имя пакета), не имя репозитория:
-
 ```js
-import { GetCourseClient } from "gc-sdk";
+import { GetCourseClient } from "getcourse-sdk";
 ```
 
 Вторая команда — один раз: скачивает Chromium для Playwright. Без неё клиент не стартует.
@@ -31,7 +29,7 @@ npx playwright install chromium
 ## Клиент
 
 ```js
-import { GetCourseClient, withClient } from "gc-sdk";
+import { GetCourseClient, withClient } from "getcourse-sdk";
 
 const gc = new GetCourseClient({
   login: "admin@example.com",
@@ -229,7 +227,7 @@ import {
   UserExistsError,
   GroupNotFoundError,
   CustomFieldNotFoundError,
-} from "gc-sdk";
+} from "getcourse-sdk";
 ```
 
 ## Разработка в этом репозитории

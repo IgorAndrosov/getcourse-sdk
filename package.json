@@ -1,5 +1,5 @@
 {
-  "name": "gc-sdk",
+  "name": "getcourse-sdk",
   "version": "0.1.0",
   "description": "Playwright SDK для автоматизации админки GetCourse",
   "license": "MIT",
