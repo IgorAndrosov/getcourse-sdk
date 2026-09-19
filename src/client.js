@@ -51,6 +51,16 @@ import {
   DEAL_ADDITIONAL_FIELDS_BODY,
   DEAL_SHOW_ALL_CUSTOM_FIELDS,
   DEAL_SAVE_BUTTON,
+  DEAL_ADD_PAYMENT_LINK,
+  DEAL_ADD_PAYMENT_BLOCK,
+  DEAL_PAYMENT_TYPE,
+  DEAL_PAYMENT_AMOUNT,
+  DEAL_PAYMENT_CURRENCY,
+  DEAL_PAYMENT_STATUS,
+  DEAL_PAYMENT_NOTIFY_USER,
+  DEAL_PAYMENT_NOTIFY_ADMIN,
+  DEAL_PAYMENT_COMMENT,
+  DEAL_FORM_SAVE,
   dealUpdatePath,
 } from "./selectors.js";
 
@@ -547,6 +557,137 @@ export class GetCourseClient {
         fieldName: name,
         value: nextValue,
         message: cleared ? `Поле заказа «${name}» очищено` : `Поле заказа «${name}» обновлено`,
+      };
+    });
+  }
+
+  /**
+   * Добавить платеж в карточку заказа.
+   * Уведомления пользователю и админу по умолчанию выключены.
+   * Статус по умолчанию «Получен». Валюта и комментарий — если переданы.
+   *
+   * @param {{
+   *   dealId: string | number,
+   *   type: string,
+   *   amount: string | number,
+   *   currency?: string,
+   *   status?: string,
+   *   notifyUser?: boolean,
+   *   notifyAdmin?: boolean,
+   *   comment?: string,
+   * }} params
+   * @returns {Promise<{
+   *   success: boolean,
+   *   dealId: string,
+   *   type: string,
+   *   amount: string,
+   *   currency: string | null,
+   *   status: string,
+   *   notifyUser: boolean,
+   *   notifyAdmin: boolean,
+   *   comment: string,
+   *   message: string,
+   * }>}
+   */
+  async addDealPayment({
+    dealId,
+    type,
+    amount,
+    currency,
+    status = "Получен",
+    notifyUser = false,
+    notifyAdmin = false,
+    comment,
+  } = {}) {
+    const id = String(dealId ?? "").trim();
+    const paymentType = String(type ?? "").trim();
+    const paymentAmount = amount === undefined || amount === null ? "" : String(amount).trim();
+    const paymentCurrency = currency?.trim() ?? "";
+    const paymentStatus = String(status ?? "").trim() || "Получен";
+    const paymentComment = comment?.trim() ?? "";
+
+    if (!id) {
+      throw new Error("dealId не может быть пустым");
+    }
+    if (!paymentType) {
+      throw new Error("type не может быть пустым");
+    }
+    if (!paymentAmount) {
+      throw new Error("amount не может быть пустым");
+    }
+
+    return this.withAuth(async () => {
+      await this.openDealUpdateForm(id);
+      const page = this.page;
+      const block = page.locator(DEAL_ADD_PAYMENT_BLOCK).first();
+      if (!(await block.isVisible().catch(() => false))) {
+        const link = page.locator(DEAL_ADD_PAYMENT_LINK).first();
+        await link.waitFor({ state: "visible" });
+        await link.click();
+      }
+      await block.waitFor({ state: "visible" });
+
+      const typeSelect = page.locator(DEAL_PAYMENT_TYPE).first();
+      await typeSelect.waitFor({ state: "visible" });
+      await this.fillCustomFieldControl(typeSelect, paymentType, "тип платежа");
+      await page.locator(DEAL_PAYMENT_AMOUNT).first().waitFor({ state: "visible" });
+      await page.locator(DEAL_PAYMENT_NOTIFY_USER).first().waitFor({ state: "attached" }).catch(() => {});
+
+      await this.fillVisibleInput(page.locator(DEAL_PAYMENT_AMOUNT).first(), paymentAmount);
+
+      if (paymentCurrency) {
+        await this.fillCustomFieldControl(
+          page.locator(DEAL_PAYMENT_CURRENCY).first(),
+          paymentCurrency,
+          "валюта",
+        );
+      }
+
+      await this.fillCustomFieldControl(
+        page.locator(DEAL_PAYMENT_STATUS).first(),
+        paymentStatus,
+        "статус платежа",
+      );
+
+      const notifyUserBox = page.locator(DEAL_PAYMENT_NOTIFY_USER).first();
+      const notifyAdminBox = page.locator(DEAL_PAYMENT_NOTIFY_ADMIN).first();
+      if (await notifyUserBox.count()) {
+        if (notifyUser) {
+          await notifyUserBox.check({ force: true });
+        } else {
+          await notifyUserBox.uncheck({ force: true });
+        }
+      }
+      if (await notifyAdminBox.count()) {
+        if (notifyAdmin) {
+          await notifyAdminBox.check({ force: true });
+        } else {
+          await notifyAdminBox.uncheck({ force: true });
+        }
+      }
+
+      if (paymentComment) {
+        await this.fillVisibleInput(page.locator(DEAL_PAYMENT_COMMENT).first(), paymentComment);
+      }
+
+      const formSave = page.locator(DEAL_FORM_SAVE).filter({ hasText: "Сохранить" }).first();
+      if (await formSave.isVisible().catch(() => false)) {
+        await this.clickHeaderSave(DEAL_FORM_SAVE, "платежа заказа");
+      } else {
+        await this.clickHeaderSave(DEAL_SAVE_BUTTON, "платежа заказа");
+      }
+
+      return {
+        success: true,
+        dealId: id,
+        type: paymentType,
+        amount: paymentAmount,
+        currency: paymentCurrency || null,
+        status: paymentStatus,
+        notifyUser: Boolean(notifyUser),
+        notifyAdmin: Boolean(notifyAdmin),
+        comment: paymentComment,
+        message: "Платеж добавлен",
       };
     });
   }

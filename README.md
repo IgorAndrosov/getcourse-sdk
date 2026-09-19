@@ -187,6 +187,28 @@ await gc.setDealCustomField({ dealId: "123", fieldName: "Источник", valu
 await gc.setDealCustomField({ dealId: "123", fieldName: "Комментарий", clear: true });
 ```
 
+### `addDealPayment({ dealId, type, amount, currency, status, notifyUser, notifyAdmin, comment })`
+
+Карточка `/sales/control/deal/update/id/{id}` → «Добавить платеж». Обязательны `dealId`, `type` (точный label селекта, например `ЮKassa`) и `amount`.
+
+- `currency` — если не передан, не трогаем.
+- `status` — по умолчанию `Получен`.
+- `notifyUser` / `notifyAdmin` — по умолчанию `false` (снимаем «уведомить», даже если в форме стоят галки). `true` — оставить/поставить.
+- `comment` — если не передан, не заполняем.
+
+```js
+await gc.addDealPayment({
+  dealId: "123",
+  type: "ЮKassa",
+  amount: 1000,
+  currency: "RUB",
+  status: "Получен",
+  comment: "оплата вручную",
+});
+```
+
+Нет такого типа/валюты/статуса — `CustomFieldNotFoundError`.
+
 ## Ошибки
 
 Все наследуют `GetCourseError`.
@@ -233,5 +255,6 @@ import {
 | `npm run set-field -- --userId=123456 --field=utm_source --clear` | Очистить доп. поле |
 | `npm run set-deal-field -- --dealId=123 --field="Комментарий" --value=текст` | Записать доп. поле заказа |
 | `npm run set-deal-field -- --dealId=123 --field="Комментарий" --clear` | Очистить доп. поле заказа |
+| `npm run add-deal-payment -- --dealId=123 --type=ЮKassa --amount=1000` | Добавить платеж в заказ |
 
-В `config.js` вместо флагов: `searchEmail` / `searchPhone` / `userId` / `groupName` / `fieldName` / `fieldValue` / `dealId` / `dealFieldName` / `dealFieldValue` / `createEmail` / `createType` / `createFirstName` / `createLastName` / `sendInvitationEmail` / `createGroupName`.
+В `config.js` вместо флагов: `searchEmail` / `searchPhone` / `userId` / `groupName` / `fieldName` / `fieldValue` / `dealId` / `dealFieldName` / `dealFieldValue` / `paymentType` / `paymentAmount` / `paymentCurrency` / `paymentStatus` / `paymentComment` / `paymentNotifyUser` / `paymentNotifyAdmin` / `createEmail` / `createType` / `createFirstName` / `createLastName` / `sendInvitationEmail` / `createGroupName`.

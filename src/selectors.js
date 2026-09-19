@@ -61,6 +61,16 @@ export const DEAL_ADDITIONAL_FIELDS_HEADING = "#dealAdditionalFields > .panel-he
 export const DEAL_ADDITIONAL_FIELDS_BODY = "#dealAdditionalFields > .panel-body";
 export const DEAL_SHOW_ALL_CUSTOM_FIELDS = "#dealAdditionalFields a.showAllCustomFields";
 export const DEAL_SAVE_BUTTON = '.page-header button.btn-primary.action-link';
+export const DEAL_ADD_PAYMENT_LINK = "a.add-payment-link";
+export const DEAL_ADD_PAYMENT_BLOCK = ".add-payment-block";
+export const DEAL_PAYMENT_TYPE = 'select[name="Payment[type]"]';
+export const DEAL_PAYMENT_AMOUNT = 'input[name="Payment[amount]"]';
+export const DEAL_PAYMENT_CURRENCY = 'select[name="Payment[currency]"]';
+export const DEAL_PAYMENT_STATUS = 'select[name="Payment[status]"]';
+export const DEAL_PAYMENT_NOTIFY_USER = 'input[type="checkbox"][name="PaymentParamsObject[notify_user]"]';
+export const DEAL_PAYMENT_NOTIFY_ADMIN = 'input[type="checkbox"][name="PaymentParamsObject[notify_admin]"]';
+export const DEAL_PAYMENT_COMMENT = 'textarea[name="Payment[comment]"]';
+export const DEAL_FORM_SAVE = `${DEAL_FORM} button.btn-primary[name="save"]`;
 
 export function dealUpdatePath(dealId) {
   return `/sales/control/deal/update/id/${dealId}`;
