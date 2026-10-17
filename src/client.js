@@ -1,4 +1,6 @@
-import { chromium, errors } from "playwright";
+import { existsSync } from "node:fs";
+import { basename } from "node:path";
+import { chromium } from "playwright";
 import { createConfig } from "./config.js";
 import {
   GetCourseError,
@@ -23,7 +25,8 @@ import {
   USER_INDEX_PATH,
   USER_CREATE_PATH,
   USER_CREATE_EMAIL,
-  USER_CREATE_TYPE,
+  USER_CREATE_TYPE_SELECT,
+  USER_CREATE_TYPE_RADIO,
   USER_CREATE_FIRST_NAME,
   USER_CREATE_LAST_NAME,
   USER_CREATE_INVITE,
@@ -61,7 +64,12 @@ import {
   DEAL_PAYMENT_NOTIFY_ADMIN,
   DEAL_PAYMENT_COMMENT,
   DEAL_FORM_SAVE,
+  FORM_ERROR,
   dealUpdatePath,
+  FILE_INDEX_PATH,
+  FILE_UPLOAD_INPUT,
+  FILE_QUEUE_ITEM_COMPLETE,
+  FILE_QUEUE_HASH_LINK,
 } from "./selectors.js";
 
 /**
@@ -98,6 +106,7 @@ export class GetCourseClient {
     this._context = null;
     this._page = null;
     this._loggingIn = false;
+    this._loginLocked = false;
   }
 
   get page() {
@@ -139,10 +148,20 @@ export class GetCourseClient {
    * @returns {Promise<LoginResult>}
    */
   async login() {
+    if (this._loginLocked) {
+      throw new LoginError("Вход уже не удался, повторный запрос не отправляем");
+    }
     await this.ensureStarted();
     this._loggingIn = true;
     try {
-      return await this._login();
+      const result = await this._login();
+      if (!result.success) {
+        this._loginLocked = true;
+      }
+      return result;
+    } catch (error) {
+      this._loginLocked = true;
+      throw error;
     } finally {
       this._loggingIn = false;
     }
@@ -157,7 +176,7 @@ export class GetCourseClient {
     return this.withAuth(async () => {
       await this.goto(USER_GROUPS_PATH);
       const tree = this.page.locator(GROUP_TREE);
-      await tree.waitFor({ state: "visible" });
+      await tree.waitFor({ state: "attached" });
       await this.waitUntilGroupsLoaded();
       const names = await this.page.locator(GROUP_HANDLE).evaluateAll((handles) =>
         handles.map((el) =>
@@ -218,35 +237,60 @@ export class GetCourseClient {
         await loading.waitFor({ state: "hidden", timeout: this.timeoutMs });
       }
 
-      await page.waitForFunction(
-        ({ previousHref, linkSel, emptySel }) => {
-          if (document.querySelector(emptySel)) {
-            return true;
-          }
-          const link = document.querySelector(linkSel);
-          if (!link) {
-            return false;
-          }
-          const href = link.getAttribute("href") ?? "";
-          const search = decodeURIComponent(location.search);
-          const filtered = search.includes("uc[email]") || search.includes("uc[phone]");
-          return filtered || (previousHref != null && href !== previousHref);
-        },
-        {
-          previousHref,
-          linkSel: USER_RESULT_LINK,
-          emptySel: USER_GRID_EMPTY,
-        },
-        { timeout: this.timeoutMs },
-      );
+      const settled = await page
+        .waitForFunction(
+          ({ previousHref, linkSel, emptySel, needle }) => {
+            if (document.querySelector(emptySel)) {
+              return "empty";
+            }
+            const table = document.querySelector("table.kv-grid-table tbody");
+            const tableText = (table?.innerText || "").replace(/\s+/g, " ").trim();
+            if (/нет (результатов|записей|данных)|ничего не найдено|not found/i.test(tableText)) {
+              return "empty";
+            }
+            if (needle && tableText.toLowerCase().includes(String(needle).toLowerCase())) {
+              return "hit";
+            }
+            const links = document.querySelectorAll(linkSel);
+            if (!links.length && table) {
+              return "empty";
+            }
+            const link = links[0];
+            if (!link) {
+              return false;
+            }
+            const href = link.getAttribute("href") ?? "";
+            const search = decodeURIComponent(location.search);
+            const filtered = search.includes("uc[email]") || search.includes("uc[phone]");
+            return filtered || (previousHref != null && href !== previousHref) ? "maybe" : false;
+          },
+          {
+            previousHref,
+            linkSel: USER_RESULT_LINK,
+            emptySel: USER_GRID_EMPTY,
+            needle: value,
+          },
+          { timeout: this.timeoutMs },
+        )
+        .then(async (handle) => handle.jsonValue())
+        .catch(() => "timeout");
 
-      const result = page.locator(USER_RESULT_LINK).first();
+      const tableText = await page.locator("table.kv-grid-table tbody").innerText().catch(() => "");
+      const hasNeedle = tableText.toLowerCase().includes(value.toLowerCase());
       const empty = page.locator(USER_GRID_EMPTY).first();
-      if (await empty.isVisible().catch(() => false)) {
+      if (
+        settled === "empty" ||
+        !hasNeedle ||
+        (await empty.isVisible().catch(() => false))
+      ) {
         throw new UserNotFoundError();
       }
 
-      const href = (await result.getAttribute("href")) ?? "";
+      const result = page.locator("table.kv-grid-table tbody tr").filter({ hasText: value }).locator('a[href*="/update/id/"]').first();
+      const fallback = page.locator(USER_RESULT_LINK).first();
+      const link = (await result.count()) ? result : fallback;
+
+      const href = (await link.getAttribute("href")) ?? "";
       const match = href.match(/\/id\/(\d+)/);
       if (!match) {
         throw new UserNotFoundError("Не удалось разобрать id пользователя из ссылки");
@@ -297,9 +341,7 @@ export class GetCourseClient {
       await this.fillVisibleInput(emailInput, mail);
 
       if (userType) {
-        const typeSelect = this.page.locator(USER_CREATE_TYPE).first();
-        await typeSelect.waitFor({ state: "attached" });
-        await this.fillCustomFieldControl(typeSelect, userType, "тип");
+        await this.fillCreateUserType(userType);
       }
 
       if (first) {
@@ -310,16 +352,19 @@ export class GetCourseClient {
       }
 
       if (sendInvitationEmail === true) {
-        await this.page.locator(USER_CREATE_INVITE).first().check();
+        await this.page.locator(USER_CREATE_INVITE).first().check({ force: true });
       } else if (sendInvitationEmail === false) {
-        await this.page.locator(USER_CREATE_INVITE).first().uncheck();
+        await this.page.locator(USER_CREATE_INVITE).first().uncheck({ force: true });
       }
 
       if (group) {
         await this.selectCreateUserGroup(group);
       }
 
-      const submit = this.page.locator(USER_CREATE_SUBMIT).filter({ hasText: "Создать" }).first();
+      const submit = this.page
+        .locator(USER_CREATE_SUBMIT)
+        .filter({ hasText: /Создать|Добавить пользователя/i })
+        .first();
       await submit.scrollIntoViewIfNeeded();
       await submit.click();
 
@@ -497,13 +542,13 @@ export class GetCourseClient {
 
     return this.withAuth(async () => {
       await this.openUserUpdateForm(id);
-      await this.expandAdditionalFields({
+      const root = await this.expandAdditionalFields({
         heading: USER_ADDITIONAL_FIELDS_HEADING,
         body: USER_ADDITIONAL_FIELDS_BODY,
         showAll: USER_SHOW_ALL_CUSTOM_FIELDS,
         rootSelector: "#userFormAdditionalFields",
       });
-      await this.fillAdditionalField("#userFormAdditionalFields", name, nextValue);
+      await this.fillAdditionalField(root, name, nextValue);
       await this.clickHeaderSave(USER_SAVE_BUTTON, "поля пользователя");
 
       const cleared = nextValue === "";
@@ -541,13 +586,13 @@ export class GetCourseClient {
 
     return this.withAuth(async () => {
       await this.openDealUpdateForm(id);
-      await this.expandAdditionalFields({
+      const root = await this.expandAdditionalFields({
         heading: DEAL_ADDITIONAL_FIELDS_HEADING,
         body: DEAL_ADDITIONAL_FIELDS_BODY,
         showAll: DEAL_SHOW_ALL_CUSTOM_FIELDS,
         rootSelector: DEAL_ADDITIONAL_FIELDS,
       });
-      await this.fillAdditionalField(DEAL_ADDITIONAL_FIELDS, name, nextValue);
+      await this.fillAdditionalField(root, name, nextValue);
       await this.clickHeaderSave(DEAL_SAVE_BUTTON, "поля заказа");
 
       const cleared = nextValue === "";
@@ -627,27 +672,17 @@ export class GetCourseClient {
       }
       await block.waitFor({ state: "visible" });
 
-      const typeSelect = page.locator(DEAL_PAYMENT_TYPE).first();
-      await typeSelect.waitFor({ state: "visible" });
-      await this.fillCustomFieldControl(typeSelect, paymentType, "тип платежа");
+      await this.fillNamedSelectOrRadio("Payment[type]", paymentType, "тип платежа");
       await page.locator(DEAL_PAYMENT_AMOUNT).first().waitFor({ state: "visible" });
       await page.locator(DEAL_PAYMENT_NOTIFY_USER).first().waitFor({ state: "attached" }).catch(() => {});
 
       await this.fillVisibleInput(page.locator(DEAL_PAYMENT_AMOUNT).first(), paymentAmount);
 
       if (paymentCurrency) {
-        await this.fillCustomFieldControl(
-          page.locator(DEAL_PAYMENT_CURRENCY).first(),
-          paymentCurrency,
-          "валюта",
-        );
+        await this.fillNamedSelectOrRadio("Payment[currency]", paymentCurrency, "валюта");
       }
 
-      await this.fillCustomFieldControl(
-        page.locator(DEAL_PAYMENT_STATUS).first(),
-        paymentStatus,
-        "статус платежа",
-      );
+      await this.fillNamedSelectOrRadio("Payment[status]", paymentStatus, "статус платежа");
 
       const notifyUserBox = page.locator(DEAL_PAYMENT_NOTIFY_USER).first();
       const notifyAdminBox = page.locator(DEAL_PAYMENT_NOTIFY_ADMIN).first();
@@ -690,6 +725,92 @@ export class GetCourseClient {
         message: "Платеж добавлен",
       };
     });
+  }
+
+  /**
+   * Загрузить файл в файловое хранилище (`/pl/fileindex/file/index`).
+   * После аплоада открывает карточку файла, при 404 перезагружает её,
+   * жмёт «Копировать ссылку» и возвращает скопированный URL.
+   *
+   * @param {{ filePath: string }} params
+   * @returns {Promise<{
+   *   success: boolean,
+   *   url: string,
+   *   hash: string,
+   *   fileName: string,
+   *   viewUrl: string,
+   *   message: string,
+   * }>}
+   */
+  async uploadFile({ filePath } = {}) {
+    const path = String(filePath ?? "").trim();
+    if (!path) {
+      throw new Error("filePath не может быть пустым");
+    }
+    if (!existsSync(path)) {
+      throw new Error(`Файл не найден: ${path}`);
+    }
+
+    return this.withAuth(async () => {
+      await this.goto(FILE_INDEX_PATH);
+      const input = this.page.locator(FILE_UPLOAD_INPUT).last();
+      await input.waitFor({ state: "attached" });
+      await input.setInputFiles(path);
+
+      const hashLink = this.page.locator(FILE_QUEUE_HASH_LINK).last();
+      await this.page.locator(FILE_QUEUE_ITEM_COMPLETE).last().waitFor({
+        state: "visible",
+        timeout: Math.max(this.timeoutMs, 180_000),
+      });
+      await hashLink.waitFor({ state: "visible" });
+      const href = (await hashLink.getAttribute("href")) ?? "";
+      const viewUrl = this.resolveUrl(href);
+      const url = await this.waitForPublicFileUrl(viewUrl);
+      let hash = "";
+      try {
+        hash = new URL(this.page.url()).searchParams.get("hash") ?? new URL(viewUrl).searchParams.get("hash") ?? "";
+      } catch {
+        hash = "";
+      }
+      return {
+        success: true,
+        url,
+        hash,
+        fileName: basename(path),
+        viewUrl: this.page.url(),
+        message: "Файл загружен",
+      };
+    });
+  }
+
+  /**
+   * Карточка файла после аплоада часто ещё 404. Не кликаем hash в новой вкладке —
+   * открываем view URL в той же сессии, пока не появится «Копировать ссылку».
+   *
+   * @param {string} viewUrl
+   * @returns {Promise<string>}
+   */
+  async waitForPublicFileUrl(viewUrl) {
+    const deadline = Date.now() + Math.max(this.timeoutMs, 60_000);
+    let delay = 300;
+    while (Date.now() < deadline) {
+      await this.page.goto(viewUrl, { waitUntil: "domcontentloaded" }).catch(() => {});
+      const copyBtn = this.page.locator("button.gc-btn-copy").first();
+      if (await copyBtn.isVisible().catch(() => false)) {
+        const onclick = (await copyBtn.getAttribute("onclick")) ?? "";
+        const match = onclick.match(/textToCopy\s*=\s*['"]([^'"]+)['"]/);
+        if (match?.[1]) {
+          return match[1];
+        }
+        const href = await this.page.locator("a.gc-btn-download").first().getAttribute("href");
+        if (href) {
+          return href;
+        }
+      }
+      await this.page.waitForTimeout(delay);
+      delay = Math.min(delay + 200, 1000);
+    }
+    throw new GetCourseError("Не удалось получить ссылку на файл (карточка ещё не создана)");
   }
 
   /**
@@ -746,14 +867,14 @@ export class GetCourseClient {
   async waitForCreatedUser(email) {
     const page = this.page;
     await page
-      .waitForFunction(() => {
+      .waitForFunction((errorSel) => {
         const href = location.href;
         if (/\/id\/\d+/.test(href) || /[?&]id=\d+/.test(href)) {
           return true;
         }
-        const err = document.querySelector(".form-group.has-error .help-block, .alert-danger");
+        const err = document.querySelector(errorSel);
         return Boolean(err && err.textContent.replace(/\s+/g, " ").trim());
-      }, { timeout: this.timeoutMs })
+      }, FORM_ERROR, { timeout: this.timeoutMs })
       .catch(() => {});
 
     const userId = parseUserIdFromUrl(page.url());
@@ -761,16 +882,13 @@ export class GetCourseClient {
       return userId;
     }
 
-    const errorText = await page.evaluate(() => {
-      const blocks = [
-        ...document.querySelectorAll(".form-group.has-error .help-block"),
-        ...document.querySelectorAll(".alert-danger"),
-      ];
+    const errorText = await page.evaluate((errorSel) => {
+      const blocks = [...document.querySelectorAll(errorSel)];
       return blocks
         .map((el) => el.textContent.replace(/\s+/g, " ").trim())
         .filter(Boolean)
         .join("; ");
-    });
+    }, FORM_ERROR);
 
     if (errorText) {
       if (/уже существ|already exist/i.test(errorText)) {
@@ -811,8 +929,31 @@ export class GetCourseClient {
   /**
    * @param {{ heading: string, body: string, showAll: string, rootSelector: string }} params
    */
+  async resolveAdditionalFieldsRoot(rootSelector) {
+    if (await this.page.locator(rootSelector).count()) {
+      return rootSelector;
+    }
+    return this.page.evaluate(() => {
+      const panels = [...document.querySelectorAll(".panel, .rd-panel")];
+      const panel = panels.find((el) =>
+        /Дополнительные поля/i.test(el.querySelector(".panel-heading, .rd-h5, .rd-h1")?.textContent || ""),
+      );
+      if (!panel) {
+        return "";
+      }
+      if (!panel.id) {
+        panel.setAttribute("id", "gc-additional-fields-root");
+      }
+      return `#${panel.id}`;
+    });
+  }
+
   async expandAdditionalFields({ heading, body, showAll, rootSelector }) {
     const page = this.page;
+    rootSelector = (await this.resolveAdditionalFieldsRoot(rootSelector)) || rootSelector;
+    heading = `${rootSelector} .panel-heading`;
+    body = `${rootSelector} .panel-body`;
+    showAll = `${rootSelector} a.showAllCustomFields`;
     const headingEl = page.locator(heading).first();
     const bodyEl = page.locator(body).first();
     if (await headingEl.count()) {
@@ -821,21 +962,56 @@ export class GetCourseClient {
         await headingEl.click();
       }
     }
-    await bodyEl.waitFor({ state: "visible" });
+    if (await bodyEl.count()) {
+      await bodyEl.waitFor({ state: "visible" });
+    }
 
-    const showAllEl = page.locator(showAll).filter({ visible: true }).first();
+    const hasContent = () =>
+      page.evaluate((rootSel) => {
+        const el = document.querySelector(rootSel);
+        if (!el) {
+          return false;
+        }
+        return Boolean(
+          el.querySelector("span.label-value, a.showAllCustomFields, .field-wrapper, .custom-field, input, select, textarea"),
+        );
+      }, rootSelector);
+
+    if (!(await hasContent())) {
+      if (await headingEl.count()) {
+        await headingEl.click();
+      }
+      await page
+        .waitForFunction((rootSel) => {
+          const el = document.querySelector(rootSel);
+          if (!el) {
+            return false;
+          }
+          return Boolean(
+            el.querySelector("span.label-value, a.showAllCustomFields, .field-wrapper, .custom-field, input, select, textarea"),
+          );
+        }, rootSelector, { timeout: 15_000 })
+        .catch(() => {});
+    }
+
+    const showAllEl = page
+      .locator(`${showAll}:not(.hidden), a.showAllCustomFields:not(.hidden)`)
+      .filter({ visible: true })
+      .first();
     if (await showAllEl.count()) {
-      const text = (await showAllEl.innerText()).replace(/\s+/g, " ").trim();
-      if (text === "Показать все поля") {
+      const text = (await showAllEl.innerText().catch(() => "")).replace(/\s+/g, " ").trim();
+      if (/Показать (все|скрытые) поля/i.test(text)) {
         await showAllEl.click();
         await page
           .waitForFunction((root) => {
             const link = document.querySelector(`${root} a.showAllCustomFields`);
-            return Boolean(link && link.textContent.replace(/\s+/g, " ").trim() !== "Показать все поля");
-          }, rootSelector, { timeout: this.timeoutMs })
+            const next = link ? link.textContent.replace(/\s+/g, " ").trim() : "";
+            return Boolean(link && !/Показать (все|скрытые) поля/i.test(next));
+          }, rootSelector, { timeout: 8_000 })
           .catch(() => {});
       }
     }
+    return rootSelector;
   }
 
   /**
@@ -853,26 +1029,90 @@ export class GetCourseClient {
       if (!rootEl) {
         return false;
       }
-      const labels = [...rootEl.querySelectorAll("span.label-value")];
-      const label = labels.find((el) => el.textContent.replace(/\s+/g, " ").trim() === targetName);
-      if (!label) {
-        return false;
+      const normalize = (text) => (text || "").replace(/\s+/g, " ").trim();
+      const isVisible = (el) => {
+        if (!el) {
+          return false;
+        }
+        const rect = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        return rect.width > 1 && rect.height > 1 && style.display !== "none" && style.visibility !== "hidden";
+      };
+      const pickWrapper = (el) =>
+        el.closest(".field-wrapper") ||
+        el.closest(".custom-field") ||
+        el.closest(".form-group") ||
+        el.closest("[class*='custom-field']") ||
+        el.closest(".field") ||
+        el.closest(".flex-column-4") ||
+        el.parentElement;
+      const pickVisibleWrapper = (el) => {
+        const found = pickWrapper(el);
+        if (found && isVisible(found)) {
+          return found;
+        }
+        if (isVisible(el)) {
+          return el;
+        }
+        return found;
+      };
+
+      const labels = [...rootEl.querySelectorAll("span.label-value, .rd-caption-s-second, .control-label, label")];
+      const labelHits = labels.filter((el) => {
+        const text = normalize(el.textContent).replace(/\*+$/, "");
+        return text === targetName;
+      });
+      for (const label of labelHits) {
+        const wrapper = pickVisibleWrapper(label);
+        if (wrapper) {
+          wrapper.setAttribute("data-gc-custom-field", "1");
+          return true;
+        }
       }
-      const wrapper =
-        label.closest(".field-wrapper") || label.closest(".custom-field") || label.closest(".field");
-      if (!wrapper) {
-        return false;
+
+      const named = [...rootEl.querySelectorAll("input, select, textarea")].find((el) => {
+        const name = el.getAttribute("name") || "";
+        const id = el.getAttribute("id") || "";
+        return name.includes(targetName) || id.includes(targetName);
+      });
+      if (named) {
+        const wrapper = pickVisibleWrapper(named);
+        if (wrapper) {
+          wrapper.setAttribute("data-gc-custom-field", "1");
+          return true;
+        }
       }
-      wrapper.setAttribute("data-gc-custom-field", "1");
-      return true;
+      const byText = [...rootEl.querySelectorAll("*")].find((el) =>
+        [...el.childNodes].some((node) => node.nodeType === Node.TEXT_NODE && normalize(node.textContent) === targetName),
+      );
+      if (byText) {
+        const wrapper = pickVisibleWrapper(byText);
+        if (wrapper) {
+          wrapper.setAttribute("data-gc-custom-field", "1");
+          return true;
+        }
+      }
+      return false;
     }, { root: rootSelector, targetName: fieldName });
 
     if (!marked) {
-      throw new CustomFieldNotFoundError(`Дополнительное поле не найдено: ${fieldName}`);
+      const hint = await page.evaluate((root) => {
+        const rootEl = document.querySelector(root);
+        if (!rootEl) {
+          return `${root} нет в DOM`;
+        }
+        const labels = [...rootEl.querySelectorAll("span.label-value, .rd-caption-s-second, .control-label")]
+          .map((el) => el.textContent.replace(/\s+/g, " ").trim())
+          .filter(Boolean)
+          .slice(0, 20);
+        return labels.length ? labels.join(", ") : `пусто, html=${rootEl.innerHTML.slice(0, 240)}`;
+      }, rootSelector);
+      throw new CustomFieldNotFoundError(`Дополнительное поле не найдено: ${fieldName}. Видно: ${hint}`);
     }
 
     const wrapper = page.locator('[data-gc-custom-field="1"]').first();
-    await wrapper.scrollIntoViewIfNeeded();
+    await wrapper.evaluate((el) => el.scrollIntoView({ block: "center", inline: "nearest" })).catch(() => {});
+    await wrapper.scrollIntoViewIfNeeded().catch(() => {});
     const kind = await wrapper.evaluate((root) => {
       const block = root.querySelector(".field-input-block") || root;
       if (block.querySelector("input[type=radio]")) {
@@ -905,10 +1145,15 @@ export class GetCourseClient {
     }
 
     const control = wrapper
-      .locator(".field-input-block input, .field-input-block textarea, .field-input-block select, input.form-control, textarea, select")
+      .locator(".field-input-block input, .field-input-block textarea, .field-input-block select, input.form-control, input.rd-input-text, textarea, select")
       .first();
     await control.waitFor({ state: "attached" });
-    await this.fillCustomFieldControl(control, value, fieldName);
+    const tag = await control.evaluate((el) => el.tagName.toLowerCase());
+    if (tag === "select") {
+      await this.fillCustomFieldControl(control, value, fieldName);
+      return;
+    }
+    await control.fill(value, { force: true });
   }
 
   /**
@@ -916,12 +1161,18 @@ export class GetCourseClient {
    * @param {string} what
    */
   async clickHeaderSave(selector, what) {
-    const save = this.page.locator(selector).filter({ hasText: "Сохранить" }).first();
-    await save.scrollIntoViewIfNeeded();
-    await Promise.all([
-      this.page.waitForLoadState("domcontentloaded"),
-      save.click(),
-    ]);
+    const visibleText = this.page.locator(selector).filter({ hasText: "Сохранить" }).filter({ visible: true }).first();
+    const saveInput = this.page.locator('input[name="save"][value="Сохранить"]');
+    if (await visibleText.isVisible().catch(() => false)) {
+      await visibleText.click();
+    } else if (await saveInput.filter({ visible: true }).first().isVisible().catch(() => false)) {
+      await saveInput.filter({ visible: true }).first().click();
+    } else if (await saveInput.count()) {
+      await saveInput.first().click({ force: true });
+    } else {
+      await this.page.getByRole("button", { name: "Сохранить" }).first().click({ force: true });
+    }
+    await this.page.waitForLoadState("domcontentloaded");
     if (await this.isLoginPage()) {
       throw new LoginError(`Сессия истекла при сохранении ${what}`);
     }
@@ -1028,6 +1279,87 @@ export class GetCourseClient {
   }
 
   /**
+   * Старый дизайн — `<select>`, новый — radio «ученик / сотрудник / администратор».
+   *
+   * @param {string} userType
+   */
+  async fillCreateUserType(userType) {
+    const target = userType.replace(/\s+/g, " ").trim();
+    const radios = this.page.locator(USER_CREATE_TYPE_RADIO);
+    if (await radios.count()) {
+      const valueMap = {
+        ученик: "user",
+        сотрудник: "teacher",
+        администратор: "admin",
+        user: "user",
+        teacher: "teacher",
+        admin: "admin",
+      };
+      const mapped = valueMap[target.toLowerCase()] ?? target;
+      const found = await this.page.evaluate(({ label, value }) => {
+        const normalize = (text) => text.replace(/\s+/g, " ").trim();
+        const inputs = [...document.querySelectorAll('input[type="radio"][name="CreateUserForm[type]"]')];
+        for (const input of inputs) {
+          const wrap = input.closest("label") || document.querySelector(`label[for="${input.id}"]`);
+          const text = wrap ? normalize(wrap.textContent) : "";
+          if (text === label || input.value === value || input.value === label) {
+            input.setAttribute("data-gc-user-type", "1");
+            return true;
+          }
+        }
+        return false;
+      }, { label: target, value: mapped });
+      if (!found) {
+        throw new CustomFieldNotFoundError(`В поле «тип» нет значения «${userType}»`);
+      }
+      await this.page.locator('[data-gc-user-type="1"]').first().check({ force: true });
+      return;
+    }
+
+    const typeSelect = this.page.locator(USER_CREATE_TYPE_SELECT).first();
+    await typeSelect.waitFor({ state: "attached" });
+    await this.fillCustomFieldControl(typeSelect, target, "тип");
+  }
+
+  /**
+   * Native `<select>` (старый UI) или radio с тем же `name` (новый UI).
+   *
+   * @param {string} nameAttr
+   * @param {string} value
+   * @param {string} fieldName
+   */
+  async fillNamedSelectOrRadio(nameAttr, value, fieldName) {
+    const radioSel = `input[type="radio"][name="${nameAttr}"]`;
+    const selectSel = `select[name="${nameAttr}"]`;
+    await this.page.locator(`${selectSel}, ${radioSel}`).first().waitFor({ state: "attached" });
+    const radios = this.page.locator(radioSel);
+    if (await radios.count()) {
+      const found = await this.page.evaluate(({ name, target }) => {
+        const normalize = (text) => text.replace(/\s+/g, " ").trim();
+        for (const el of document.querySelectorAll("[data-gc-named-choice]")) {
+          el.removeAttribute("data-gc-named-choice");
+        }
+        const inputs = [...document.querySelectorAll(`input[type="radio"][name="${name}"]`)];
+        for (const input of inputs) {
+          const wrap = input.closest("label") || (input.id ? document.querySelector(`label[for="${input.id}"]`) : null);
+          const text = wrap ? normalize(wrap.textContent) : "";
+          if (text === target || input.value === target) {
+            input.setAttribute("data-gc-named-choice", "1");
+            return true;
+          }
+        }
+        return false;
+      }, { name: nameAttr, target: value });
+      if (!found) {
+        throw new CustomFieldNotFoundError(`В поле «${fieldName}» нет значения «${value}»`);
+      }
+      await this.page.locator('[data-gc-named-choice="1"]').first().check({ force: true });
+      return;
+    }
+    await this.fillCustomFieldControl(this.page.locator(selectSel).first(), value, fieldName);
+  }
+
+  /**
    * @param {import('playwright').Locator} control
    * @param {string} value
    * @param {string} fieldName
@@ -1036,8 +1368,8 @@ export class GetCourseClient {
     const tag = await control.evaluate((el) => el.tagName.toLowerCase());
     if (tag === "select") {
       if (value === "") {
-        await control.selectOption({ index: 0 }).catch(async () => {
-          await control.selectOption("");
+        await control.selectOption({ index: 0 }, { force: true }).catch(async () => {
+          await control.selectOption("", { force: true });
         });
         return;
       }
@@ -1054,7 +1386,7 @@ export class GetCourseClient {
       if (optionIndex < 0) {
         throw new CustomFieldNotFoundError(`В поле «${fieldName}» нет значения «${value}»`);
       }
-      await control.selectOption({ index: optionIndex });
+      await control.selectOption({ index: optionIndex }, { force: true });
       return;
     }
 
@@ -1112,14 +1444,18 @@ export class GetCourseClient {
   async showAllUserGroups() {
     const page = this.page;
     const tree = page.locator(USER_GROUP_SELECT);
-    const showAll = tree.locator("a.all-link").filter({ visible: true }).first();
-    await showAll.waitFor({ state: "visible" });
-    await showAll.click();
+    await tree.waitFor({ state: "visible" });
+    const alreadyAll = await tree.evaluate((el) => !el.classList.contains("only-selected"));
+    if (!alreadyAll) {
+      const showAll = tree.locator("a.all-link").filter({ visible: true }).first();
+      await showAll.waitFor({ state: "visible" });
+      await showAll.click();
 
-    const switched = await this.waitUntilAllGroupsShown(5_000);
-    if (!switched) {
-      await showAll.evaluate((el) => el.click());
-      await this.waitUntilAllGroupsShown(this.timeoutMs);
+      const switched = await this.waitUntilAllGroupsShown(5_000);
+      if (!switched) {
+        await showAll.evaluate((el) => el.click());
+        await this.waitUntilAllGroupsShown(this.timeoutMs);
+      }
     }
 
     const expandAll = tree.locator("a.folder-expand").filter({ visible: true });
@@ -1339,6 +1675,9 @@ export class GetCourseClient {
   }
 
   async ensureLoggedIn() {
+    if (this._loginLocked) {
+      throw new LoginError("Вход уже не удался, повторный запрос не отправляем");
+    }
     if (this._loggingIn || !(await this.isLoginPage())) {
       return;
     }
@@ -1369,19 +1708,42 @@ export class GetCourseClient {
     if ((await fields.email.inputValue()) !== this.config.login) {
       await this.fillVisibleInput(fields.email, this.config.login);
     }
+    await page.waitForFunction(() => {
+      const el = document.querySelector("[data-gc-login-submit]");
+      return Boolean(el && !el.disabled);
+    }, { timeout: this.timeoutMs });
     await fields.submit.click();
 
-    try {
-      await Promise.race([
-        page.waitForURL((url) => !String(url).includes(LOGIN_PATH), { timeout: this.timeoutMs }),
-        page.locator(USER_LOGINED).first().waitFor({ state: "attached", timeout: this.timeoutMs }),
-        page.waitForURL((url) => String(url).includes(TWO_FACTOR_PATH), { timeout: this.timeoutMs }),
-      ]);
-    } catch (error) {
-      if (error instanceof errors.TimeoutError) {
-        throw new LoginError("Не удалось войти: страница логина не сменилась");
+    const deadline = Date.now() + this.timeoutMs;
+    while (Date.now() < deadline) {
+      const url = page.url();
+      if (url.includes(TWO_FACTOR_PATH)) {
+        break;
       }
-      throw error;
+      if (!url.includes(LOGIN_PATH) || (await page.locator(USER_LOGINED).count().catch(() => 0))) {
+        break;
+      }
+      const authError = await page
+        .evaluate(() => {
+          const body = document.body;
+          if (!body) {
+            return "";
+          }
+          const text = (body.innerText || "").replace(/\s+/g, " ");
+          const match = text.match(
+            /Неверный пароль|Пользователь не найден|Неправильный (логин|пароль)|Неверный логин/i,
+          );
+          return match ? match[0] : "";
+        })
+        .catch(() => "");
+      if (authError) {
+        throw new LoginError(authError);
+      }
+      await page.waitForTimeout(200);
+    }
+
+    if (page.url().includes(LOGIN_PATH) && !(await page.locator(USER_LOGINED).count().catch(() => 0))) {
+      throw new LoginError("Не удалось войти: страница логина не сменилась");
     }
 
     const currentUrl = page.url();
@@ -1426,8 +1788,8 @@ export class GetCourseClient {
         while (node) {
           const emails = [...node.querySelectorAll('input[name="email"], input.form-field-email')].filter(isVisible);
           const submit = [...node.querySelectorAll("button, input[type=submit]")].find((el) => {
-            const text = (el.innerText || el.value || "").replace(/\s+/g, " ").trim();
-            return text === "Войти" && isVisible(el);
+            const text = (el.innerText || el.value || "").replace(/\s+/g, " ").trim().toLowerCase();
+            return /^войти(\s|$)/.test(text) && isVisible(el);
           });
           if (emails.length && submit) {
             const passwordTop = password.getBoundingClientRect().top;

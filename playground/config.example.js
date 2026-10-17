@@ -27,4 +27,5 @@ export default {
   createLastName: "",
   sendInvitationEmail: undefined,
   createGroupName: "",
+  uploadFilePath: "",
 };

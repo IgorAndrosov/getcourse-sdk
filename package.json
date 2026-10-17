@@ -35,7 +35,9 @@
     "set-field": "node playground/set-field.js",
     "set-deal-field": "node playground/set-deal-field.js",
     "add-deal-payment": "node playground/add-deal-payment.js",
-    "create-user": "node playground/create-user.js"
+    "create-user": "node playground/create-user.js",
+    "upload-file": "node playground/upload-file.js",
+    "test": "node --test --test-concurrency=1 --test-timeout=180000 test/methods.e2e.js"
   },
   "engines": {
     "node": ">=18"

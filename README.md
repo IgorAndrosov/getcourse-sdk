@@ -2,6 +2,8 @@
 
 Playwright-библиотека для автоматизации админки GetCourse. Сессия живёт, пока открыт клиент: методы ходят уже авторизованными.
 
+Методы рассчитаны на **оба** интерфейса админки: классический и редизайн (класс `.gc-redesigned`). Селекторы с `name`/`id` Yii общие; где разметка разошлась (radio вместо `<select>`, тексты кнопок, Save), клиент пробует оба варианта.
+
 Репозиторий: [IgorAndrosov/getcourse-sdk](https://github.com/IgorAndrosov/getcourse-sdk). Node.js >= 18. Пакет ESM (`import`).
 
 ## Установка
@@ -114,7 +116,7 @@ const id2 = await gc.getUserId({ phone: "+79001234567" });
 
 Страница `/pl/user/user/create`. Обязателен только `email`.
 
-- `type` — точный label селекта, обычно `ученик` или `сотрудник`. Не передан — не трогаем.
+- `type` — точный label: `ученик` / `сотрудник` (в новом UI ещё `администратор`). Старый дизайн — `<select>`, новый — radio. Не передан — не трогаем.
 - `firstName` / `lastName` — пустые не заполняем.
 - `sendInvitationEmail` — `true`/`false` ставит/снимает «Отправлять стартовое письмо». Не передан — чекбокс как есть.
 - `groupName` — точное имя в Select2. Не передан — группу не выбираем.
@@ -207,6 +209,24 @@ await gc.addDealPayment({
 
 Нет такого типа/валюты/статуса — `CustomFieldNotFoundError`.
 
+### `uploadFile({ filePath })`
+
+Файловое хранилище `/pl/fileindex/file/index`: `setInputFiles` в uploadifive → ждём `.complete` → hash из очереди. Карточку не кликаем сразу (часто 404): поллим view URL, пока в HTML не появится `textToCopy` — это и есть публичная ссылка (`https://fs.getcourse.ru/fileservice/file/download/...`).
+
+```js
+const uploaded = await gc.uploadFile({ filePath: "./photo.jpg" });
+// {
+//   success: true,
+//   url: "https://fs.getcourse.ru/fileservice/file/download/a/…/h/….jpg",
+//   hash: "….jpg",
+//   fileName: "photo.jpg",
+//   viewUrl: "https://school.getcourse.ru/pl/fileindex/file/view?hash=….jpg",
+//   message: "Файл загружен",
+// }
+```
+
+Файла на диске нет — обычный `Error`.
+
 ## Ошибки
 
 Все наследуют `GetCourseError`.
@@ -254,5 +274,14 @@ import {
 | `npm run set-deal-field -- --dealId=123 --field="Комментарий" --value=текст` | Записать доп. поле заказа |
 | `npm run set-deal-field -- --dealId=123 --field="Комментарий" --clear` | Очистить доп. поле заказа |
 | `npm run add-deal-payment -- --dealId=123 --type=ЮKassa --amount=1000` | Добавить платеж в заказ |
+| `npm run upload-file -- --file=./photo.jpg` | Загрузить файл и вернуть публичную ссылку |
 
-В `config.js` вместо флагов: `searchEmail` / `searchPhone` / `userId` / `groupName` / `fieldName` / `fieldValue` / `dealId` / `dealFieldName` / `dealFieldValue` / `paymentType` / `paymentAmount` / `paymentCurrency` / `paymentStatus` / `paymentComment` / `paymentNotifyUser` / `paymentNotifyAdmin` / `createEmail` / `createType` / `createFirstName` / `createLastName` / `sendInvitationEmail` / `createGroupName`.
+В `config.js` вместо флагов: `searchEmail` / `searchPhone` / `userId` / `groupName` / `fieldName` / `fieldValue` / `dealId` / `dealFieldName` / `dealFieldValue` / `paymentType` / `paymentAmount` / `paymentCurrency` / `paymentStatus` / `paymentComment` / `paymentNotifyUser` / `paymentNotifyAdmin` / `createEmail` / `createType` / `createFirstName` / `createLastName` / `sendInvitationEmail` / `createGroupName` / `uploadFilePath`.
+
+Живой прогон всех методов (`test/methods.e2e.js`) по умолчанию бьёт в `https://igorandrosov-test.getcourse.ru`, логин берёт из `playground/config.js` (или `GC_LOGIN` / `GC_PASSWORD`):
+
+```bash
+npm test
+HEADED=1 npm test
+GC_BASE_URL=https://your-school.getcourse.ru npm test
+```
